@@ -100,25 +100,53 @@ func TestAnalyzeJSONOutput(t *testing.T) {
 	}
 }
 
-// buildVaultArtifact compiles the test Vault with Foundry and returns the path to
-// its build artifact, skipping the test when forge is unavailable.
-func buildVaultArtifact(t *testing.T) string {
+// TestGeneratedTestsPassInFoundry generates reproduction tests for the Vault and
+// runs them with forge, proving the generated suite compiles and passes.
+func TestGeneratedTestsPassInFoundry(t *testing.T) {
+	dir, artifact := buildVaultProject(t)
+	testDir := filepath.Join(dir, "test")
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"analyze", "--tests", testDir, artifact}, &out, &errBuf); code != 0 {
+		t.Fatalf("run exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+
+	output, err := exec.Command("forge", "test", "--root", dir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated tests did not pass forge test: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "0 failed") {
+		t.Fatalf("expected all generated tests to pass, got:\n%s", output)
+	}
+}
+
+// buildVaultProject compiles the test Vault with Foundry and returns the project
+// directory and the path to its build artifact, skipping when forge is absent.
+func buildVaultProject(t *testing.T) (dir, artifact string) {
 	t.Helper()
 	if _, err := exec.LookPath("forge"); err != nil {
 		t.Skip("forge not installed; skipping integration test")
 	}
 
-	dir := t.TempDir()
+	dir = t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	writeFile(t, filepath.Join(dir, "foundry.toml"), "[profile.default]\nsrc = \"src\"\nout = \"out\"\n")
+	writeFile(t, filepath.Join(dir, "foundry.toml"), "[profile.default]\nsrc = \"src\"\nout = \"out\"\ntest = \"test\"\n")
 	writeFile(t, filepath.Join(dir, "src", "Vault.sol"), vaultSource)
 
 	if output, err := exec.Command("forge", "build", "--root", dir).CombinedOutput(); err != nil {
 		t.Skipf("forge build failed (environment issue): %v\n%s", err, output)
 	}
-	return filepath.Join(dir, "out", "Vault.sol", "Vault.json")
+	return dir, filepath.Join(dir, "out", "Vault.sol", "Vault.json")
+}
+
+// buildVaultArtifact returns just the artifact path for tests that do not need
+// the project directory.
+func buildVaultArtifact(t *testing.T) string {
+	t.Helper()
+	_, artifact := buildVaultProject(t)
+	return artifact
 }
 
 func writeFile(t *testing.T, path, content string) {

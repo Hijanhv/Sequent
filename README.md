@@ -130,6 +130,20 @@ consume:
 go run ./cmd/sequent analyze --json out/Vault.sol/Vault.json
 ```
 
+Add `--tests <dir>` to write a Foundry test that reproduces each confirmed
+finding. Drop the generated file into your project and run it:
+
+```sh
+go run ./cmd/sequent analyze --tests test out/Vault.sol/Vault.json
+forge test
+```
+
+Each generated test deploys the contract twice, runs the reader on its own and
+again after the writer, and asserts the reader's result changed. It is proof an
+auditor or a developer can run, and it doubles as a regression check once the
+issue is fixed. The file depends only on Foundry's built-in cheatcodes, not on
+forge-std, so it compiles in any Foundry project.
+
 Sequent deploys the contract into its in-memory EVM, calls each function, and
 prints the ordering dependencies it found:
 
@@ -222,9 +236,11 @@ Sequent is under active development. Built and tested today:
   Foundry build artifact.
 - `internal/report`: ranks the dependencies into findings by severity and renders
   them as text or, with `--json`, as machine-readable output for CI.
+- `internal/gentest`: generates a runnable Foundry test that reproduces each
+  confirmed finding.
 - `cmd/sequent`: the command-line tool. `sequent analyze <artifact.json>` prints
   the ordering dependencies for a contract, ranked by severity with the measured
-  effect of each.
+  effect of each, and can emit JSON or reproduction tests.
 
 Planned:
 
@@ -233,7 +249,6 @@ Planned:
 - Pricing the measured effect in a common asset like ETH, for contracts where a
   market model makes that well defined, on top of the raw magnitude Sequent
   already reports.
-- A runnable test per finding, so a developer can reproduce and re-check a fix.
 
 ## Development
 

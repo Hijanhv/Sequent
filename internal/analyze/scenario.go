@@ -37,6 +37,12 @@ type Impact struct {
 	BeforeReverted bool
 	AfterReverted  bool
 	Delta          *big.Int
+
+	// WriterCall and ReaderCall are the exact calldata that produced the
+	// confirmed effect, kept so a reproduction test can replay it. They are nil
+	// when the edge is not confirmed.
+	WriterCall []byte
+	ReaderCall []byte
 }
 
 // Evaluate tests each edge by front-running: it runs the reader alone, then runs
@@ -147,6 +153,8 @@ func evalEdge(e *evm.Executor, caller, addr common.Address, edge graph.Edge, var
 				imp.Before, imp.BeforeReverted = before.output, before.reverted
 				imp.After, imp.AfterReverted = after.output, after.reverted
 				imp.Delta = valueDelta(before, after)
+				imp.WriterCall = writerCall
+				imp.ReaderCall = readerCall
 				return imp
 			}
 		}

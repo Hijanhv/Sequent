@@ -50,6 +50,11 @@ type Finding struct {
 	AfterReverted  bool
 	Delta          *big.Int
 	Slots          []trace.Slot
+
+	// WriterCall and ReaderCall are the calldata that produced a confirmed
+	// effect, used to generate a reproduction test.
+	WriterCall []byte
+	ReaderCall []byte
 }
 
 // Skipped names a function that could not be analyzed.
@@ -91,6 +96,8 @@ func Build(contract string, analyzed int, skipped []analyze.SkippedFunction, g g
 			AfterReverted:  imp.AfterReverted,
 			Delta:          imp.Delta,
 			Slots:          e.Slots,
+			WriterCall:     imp.WriterCall,
+			ReaderCall:     imp.ReaderCall,
 		})
 	}
 	rank(findings)
