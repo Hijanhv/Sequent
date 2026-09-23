@@ -88,6 +88,72 @@ Each stage lands with passing tests before the next begins. This keeps bugs from
 piling up and hiding behind each other, and it means the project is always in a
 working state.
 
+### Why we read a Foundry artifact first
+
+To analyze a contract, Sequent needs two things: its ABI (the list of functions)
+and its bytecode (the compiled code to run). Those can come from different
+places, so the analyzer is kept behind a small loader and never learns where a
+contract came from. It only ever receives an ABI and bytecode.
+
+The first loader reads a Foundry build artifact. When you compile with Foundry,
+which is the toolchain most Web3 teams and auditors already use, it writes one
+JSON file per contract that holds both the ABI and the bytecode together. Reading
+that single file is the lowest-friction way to point Sequent at real code, and it
+speaks the same language the target audience already works in.
+
+Two other loaders were considered and deliberately left for later:
+
+- **Separate ABI and bytecode files.** More toolchain-agnostic, but the user has
+  to gather and pass two files. Because it is just another thin loader over the
+  same shape, adding it later costs almost nothing.
+- **Fetching bytecode from a live chain by address.** This is what turns Sequent
+  into a scanner for already-deployed contracts, and it too is just another
+  loader.
+
+Doing the artifact loader first gets Sequent running on real code the fastest
+without closing any of these doors. The expensive work, parsing the ABI and
+driving the contract, is written once and shared by every loader.
+
+## Using it
+
+Build a contract with Foundry, then point Sequent at the artifact:
+
+```sh
+forge build
+go run ./cmd/sequent analyze out/Vault.sol/Vault.json
+```
+
+Sequent deploys the contract into its in-memory EVM, calls each function, and
+prints the ordering dependencies it found:
+
+```
+Ordering dependencies (Writer -> Reader):
+  deposit() -> total()      slots: 0x01
+  deposit() -> withdraw()   slots: 0xfd5d...5ac7
+
+2 dependencies found. These are the pairs where transaction order can change behavior.
+```
+
+Each line means the writer function changes a storage slot the reader function
+depends on, so a party who controls transaction order could place the writer
+first to influence the reader.
+
+### Current limitation: functions are called with zero-value arguments
+
+For now Sequent calls each function with zero-valued arguments (0, the zero
+address, empty bytes, and so on). This reaches many functions, but two things
+follow from it:
+
+- A function guarded by a check on its inputs may revert early, so only the
+  storage it touched before the revert is recorded.
+- Functions that key storage by an argument, such as a `mapping` indexed by an
+  address, are read and written at the slot for the zero key, so two functions
+  are only linked when they happen to use the same key.
+
+Driving functions with meaningful and fuzzed arguments is a planned stage. Until
+then this is a sound first pass, and anything whose arguments cannot be encoded
+is reported as skipped rather than quietly dropped.
+
 ## Status
 
 Sequent is under active development. Built and tested today:
@@ -101,11 +167,18 @@ Sequent is under active development. Built and tested today:
   runs it, and records every storage read and write with the exact slot. All
   three stages above are done and tested.
 - `internal/analyze`: drives each function of a deployed contract from a clean
-  baseline, collects its storage trace, and feeds the traces into the graph.
-  This is the full pipeline from bytecode to ordering arrows.
+  baseline, collects its storage trace, and feeds the traces into the graph. It
+  also turns a contract's ABI into the set of calls to make.
+- `internal/contract`: loads a compiled contract. The first loader reads a
+  Foundry build artifact.
+- `cmd/sequent`: the command-line tool. `sequent analyze <artifact.json>` prints
+  the ordering dependencies for a contract.
 
 Planned:
 
+- Calling functions with meaningful and fuzzed arguments, not just zero values.
+- More loaders: separate ABI and bytecode files, and fetching a deployed
+  contract's bytecode from a live chain by address.
 - Scenario evaluation that estimates how much value is at risk for each arrow.
 - A report that ranks findings by severity and ships a runnable test for each.
 
