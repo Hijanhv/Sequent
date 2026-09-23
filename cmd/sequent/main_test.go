@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,23 +36,8 @@ func TestRunArgumentHandling(t *testing.T) {
 // against the artifact. It is skipped when forge is unavailable so the rest of
 // the suite stays self-contained.
 func TestAnalyzeRealContract(t *testing.T) {
-	if _, err := exec.LookPath("forge"); err != nil {
-		t.Skip("forge not installed; skipping integration test")
-	}
+	artifact := buildVaultArtifact(t)
 
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	writeFile(t, filepath.Join(dir, "foundry.toml"), "[profile.default]\nsrc = \"src\"\nout = \"out\"\n")
-	writeFile(t, filepath.Join(dir, "src", "Vault.sol"), vaultSource)
-
-	build := exec.Command("forge", "build", "--root", dir)
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Skipf("forge build failed (environment issue): %v\n%s", err, output)
-	}
-
-	artifact := filepath.Join(dir, "out", "Vault.sol", "Vault.json")
 	var out, errBuf bytes.Buffer
 	if code := run([]string{"analyze", artifact}, &out, &errBuf); code != 0 {
 		t.Fatalf("run exit = %d, want 0 (stderr: %s)", code, errBuf.String())
@@ -74,6 +60,65 @@ func TestAnalyzeRealContract(t *testing.T) {
 	if !strings.Contains(out.String(), "change +1") {
 		t.Fatalf("expected a quantified value change, got:\n%s", out.String())
 	}
+}
+
+// TestAnalyzeJSONOutput checks the machine-readable output parses and carries the
+// expected findings.
+func TestAnalyzeJSONOutput(t *testing.T) {
+	artifact := buildVaultArtifact(t)
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"analyze", "--json", artifact}, &out, &errBuf); code != 0 {
+		t.Fatalf("run exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+
+	var got struct {
+		Findings []struct {
+			Severity string `json:"severity"`
+			Writer   string `json:"writer"`
+			Reader   string `json:"reader"`
+		} `json:"findings"`
+		Summary struct {
+			High int `json:"high"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+	}
+	if got.Summary.High < 1 {
+		t.Fatalf("expected at least one HIGH finding in JSON, got %+v", got.Summary)
+	}
+
+	found := false
+	for _, f := range got.Findings {
+		if f.Writer == "deposit()" && f.Reader == "balanceOf(address)" && f.Severity == "HIGH" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a HIGH deposit() -> balanceOf(address) finding in JSON, got %+v", got.Findings)
+	}
+}
+
+// buildVaultArtifact compiles the test Vault with Foundry and returns the path to
+// its build artifact, skipping the test when forge is unavailable.
+func buildVaultArtifact(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("forge"); err != nil {
+		t.Skip("forge not installed; skipping integration test")
+	}
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "foundry.toml"), "[profile.default]\nsrc = \"src\"\nout = \"out\"\n")
+	writeFile(t, filepath.Join(dir, "src", "Vault.sol"), vaultSource)
+
+	if output, err := exec.Command("forge", "build", "--root", dir).CombinedOutput(); err != nil {
+		t.Skipf("forge build failed (environment issue): %v\n%s", err, output)
+	}
+	return filepath.Join(dir, "out", "Vault.sol", "Vault.json")
 }
 
 func writeFile(t *testing.T, path, content string) {

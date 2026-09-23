@@ -123,6 +123,13 @@ forge build
 go run ./cmd/sequent analyze out/Vault.sol/Vault.json
 ```
 
+Add `--json` for machine-readable output that another tool or a CI job can
+consume:
+
+```sh
+go run ./cmd/sequent analyze --json out/Vault.sol/Vault.json
+```
+
 Sequent deploys the contract into its in-memory EVM, calls each function, and
 prints the ordering dependencies it found:
 
@@ -213,6 +220,8 @@ Sequent is under active development. Built and tested today:
   reader's value so findings can be ranked.
 - `internal/contract`: loads a compiled contract. The first loader reads a
   Foundry build artifact.
+- `internal/report`: ranks the dependencies into findings by severity and renders
+  them as text or, with `--json`, as machine-readable output for CI.
 - `cmd/sequent`: the command-line tool. `sequent analyze <artifact.json>` prints
   the ordering dependencies for a contract, ranked by severity with the measured
   effect of each.
@@ -224,8 +233,7 @@ Planned:
 - Pricing the measured effect in a common asset like ETH, for contracts where a
   market model makes that well defined, on top of the raw magnitude Sequent
   already reports.
-- A machine-readable report (JSON or SARIF) and a runnable test per finding, so
-  results drop into CI.
+- A runnable test per finding, so a developer can reproduce and re-check a fix.
 
 ## Development
 
