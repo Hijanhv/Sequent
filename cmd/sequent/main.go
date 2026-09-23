@@ -16,7 +16,6 @@ import (
 
 	"github.com/Hijanhv/Sequent/internal/analyze"
 	"github.com/Hijanhv/Sequent/internal/contract"
-	"github.com/Hijanhv/Sequent/internal/evm"
 	"github.com/Hijanhv/Sequent/internal/graph"
 	"github.com/Hijanhv/Sequent/internal/trace"
 )
@@ -68,20 +67,13 @@ func analyzeArtifact(path string, out io.Writer) error {
 		return err
 	}
 
-	e, err := evm.New()
-	if err != nil {
-		return err
-	}
-
-	addr, err := e.Deploy(deployer, c.Bytecode)
+	fns, skipped, err := analyze.Fuzz(c.Bytecode, c.ABI, deployer, caller, analyze.FuzzConfig{})
 	if err != nil {
 		return fmt.Errorf("%w (constructors that require arguments are not yet supported)", err)
 	}
 
-	specs, skipped := analyze.SpecsFromABI(c.ABI)
-	g := analyze.Build(e, caller, addr, specs)
-
-	printReport(out, path, len(specs), skipped, g)
+	g := graph.Build(fns)
+	printReport(out, path, len(fns), skipped, g)
 	return nil
 }
 

@@ -57,10 +57,14 @@ func TestAnalyzeRealContract(t *testing.T) {
 		t.Fatalf("run exit = %d, want 0 (stderr: %s)", code, errBuf.String())
 	}
 
-	// total is a plain slot both deposit and the getter touch, so this edge must
-	// appear regardless of the mapping-key subtleties around balances.
+	// total is a plain slot both deposit and the getter touch.
 	if !strings.Contains(out.String(), "deposit() -> total()") {
 		t.Fatalf("expected a deposit() -> total() dependency, got:\n%s", out.String())
+	}
+	// Argument fuzzing calls balanceOf with the caller address, so it reads the
+	// same mapping slot deposit writes. This edge is the fuzzing payoff.
+	if !strings.Contains(out.String(), "deposit() -> balanceOf(address)") {
+		t.Fatalf("expected a deposit() -> balanceOf(address) dependency, got:\n%s", out.String())
 	}
 }
 

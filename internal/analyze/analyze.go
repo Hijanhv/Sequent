@@ -8,7 +8,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/Hijanhv/Sequent/internal/evm"
-	"github.com/Hijanhv/Sequent/internal/graph"
 	"github.com/Hijanhv/Sequent/internal/trace"
 )
 
@@ -33,9 +32,4 @@ func Traces(e *evm.Executor, caller, contract common.Address, specs []CallSpec) 
 		e.RevertToSnapshot(snap)
 	}
 	return fns
-}
-
-// Build runs the specs and returns the interaction graph over them.
-func Build(e *evm.Executor, caller, contract common.Address, specs []CallSpec) graph.Graph {
-	return graph.Build(Traces(e, caller, contract, specs))
 }

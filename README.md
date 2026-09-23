@@ -128,31 +128,38 @@ prints the ordering dependencies it found:
 
 ```
 Ordering dependencies (Writer -> Reader):
-  deposit() -> total()      slots: 0x01
-  deposit() -> withdraw()   slots: 0xfd5d...5ac7
+  deposit() -> balanceOf(address)   slots: 0xfd5d...5ac7
+  deposit() -> balances(address)    slots: 0xfd5d...5ac7
+  deposit() -> total()              slots: 0x01
+  deposit() -> withdraw()           slots: 0xfd5d...5ac7
 
-2 dependencies found. These are the pairs where transaction order can change behavior.
+4 dependencies found. These are the pairs where transaction order can change behavior.
 ```
 
 Each line means the writer function changes a storage slot the reader function
 depends on, so a party who controls transaction order could place the writer
 first to influence the reader.
 
-### Current limitation: functions are called with zero-value arguments
+### How arguments are chosen
 
-For now Sequent calls each function with zero-valued arguments (0, the zero
-address, empty bytes, and so on). This reaches many functions, but two things
-follow from it:
+A function's behavior, and the storage it touches, usually depends on its
+arguments. Sequent calls each function several times with values drawn from a
+small fixed set: a few numbers, a few addresses, true and false, some bytes. It
+then unions the storage touched across those calls into one footprint per
+function.
 
-- A function guarded by a check on its inputs may revert early, so only the
-  storage it touched before the revert is recorded.
-- Functions that key storage by an argument, such as a `mapping` indexed by an
-  address, are read and written at the slot for the zero key, so two functions
-  are only linked when they happen to use the same key.
+The set of candidate values is shared across functions on purpose. This is what
+lets a function that writes a `mapping` keyed by `msg.sender` line up with one
+that reads the same mapping through an address argument: the caller's address is
+one of the candidate values, so both end up at the same storage slot and the
+dependency between them is found. Calling with only zero values would miss it,
+because the two would touch different slots.
 
-Driving functions with meaningful and fuzzed arguments is a planned stage. Until
-then this is a sound first pass, and anything whose arguments cannot be encoded
-is reported as skipped rather than quietly dropped.
+The candidate set is deliberately small and fixed rather than random, so every
+run is reproducible. It is a practical middle ground, not exhaustive: a function
+reachable only with a very specific input may still be under-explored, and a
+function whose arguments cannot be encoded is reported as skipped rather than
+guessed at. Deeper input exploration is future work.
 
 ## Status
 
@@ -166,9 +173,10 @@ Sequent is under active development. Built and tested today:
 - `internal/evm`: the embedded EVM. It deploys a contract into in-memory state,
   runs it, and records every storage read and write with the exact slot. All
   three stages above are done and tested.
-- `internal/analyze`: drives each function of a deployed contract from a clean
-  baseline, collects its storage trace, and feeds the traces into the graph. It
-  also turns a contract's ABI into the set of calls to make.
+- `internal/analyze`: turns a contract's ABI into calls, drives each function
+  from a clean baseline, and feeds the traces into the graph. It calls each
+  function with several argument value sets, in parallel across independent EVMs,
+  and unions the storage each function touches.
 - `internal/contract`: loads a compiled contract. The first loader reads a
   Foundry build artifact.
 - `cmd/sequent`: the command-line tool. `sequent analyze <artifact.json>` prints
@@ -176,7 +184,6 @@ Sequent is under active development. Built and tested today:
 
 Planned:
 
-- Calling functions with meaningful and fuzzed arguments, not just zero values.
 - More loaders: separate ABI and bytecode files, and fetching a deployed
   contract's bytecode from a live chain by address.
 - Scenario evaluation that estimates how much value is at risk for each arrow.
