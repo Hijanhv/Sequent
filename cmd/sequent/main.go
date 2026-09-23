@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/Hijanhv/Sequent/internal/analyze"
@@ -83,7 +84,13 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	rep, err := analyzeContract(c, path)
+	code, err := analyze.ResolveCreationCode(c.Bytecode, c.ABI, deployer)
+	if err != nil {
+		fmt.Fprintf(stderr, "sequent: %v\n", err)
+		return 1
+	}
+
+	rep, err := analyzeContract(code, c.ABI, path)
 	if err != nil {
 		fmt.Fprintf(stderr, "sequent: %v\n", err)
 		return 1
@@ -99,7 +106,7 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *testsDir != "" {
-		if err := writeReproTests(*testsDir, path, c.Bytecode, rep, stderr); err != nil {
+		if err := writeReproTests(*testsDir, path, code, rep, stderr); err != nil {
 			fmt.Fprintf(stderr, "sequent: write tests: %v\n", err)
 			return 1
 		}
@@ -133,15 +140,15 @@ func loadContract(abiPath, binPath string, positional []string) (*contract.Contr
 	return c, positional[0], err
 }
 
-func analyzeContract(c *contract.Contract, path string) (report.Report, error) {
-	fns, skipped, err := analyze.Fuzz(c.Bytecode, c.ABI, deployer, caller, analyze.FuzzConfig{})
+func analyzeContract(code []byte, a abi.ABI, path string) (report.Report, error) {
+	fns, skipped, err := analyze.Fuzz(code, a, deployer, caller, analyze.FuzzConfig{})
 	if err != nil {
-		return report.Report{}, fmt.Errorf("%w (constructors that require arguments are not yet supported)", err)
+		return report.Report{}, err
 	}
 
 	g := graph.Build(fns)
 
-	impacts, err := analyze.Evaluate(c.Bytecode, c.ABI, deployer, caller, g.Edges, analyze.FuzzConfig{})
+	impacts, err := analyze.Evaluate(code, a, deployer, caller, g.Edges, analyze.FuzzConfig{})
 	if err != nil {
 		return report.Report{}, err
 	}

@@ -91,7 +91,9 @@ hands back a ranked list of findings plus a test that reproduces each one.
    source.
 2. **Run.** It deploys the bytecode into an EVM it carries inside itself, calls
    each function, and records the exact storage slots touched. Because the EVM is
-   in memory and starts empty, the same contract always gives the same result.
+   in memory and starts empty, the same contract always gives the same result. If
+   the constructor needs arguments, Sequent tries values until the contract
+   deploys, so contracts that take constructor parameters work too.
 3. **Connect.** If `deposit` writes slot 7 and `balanceOf` reads slot 7, Sequent
    draws `deposit -> balanceOf`. Pairs that share no slot are dropped, so only
    the pairs where order could matter move forward.
@@ -207,6 +209,26 @@ without closing any of these off.
 
 ## Using it
 
+### Prerequisites
+
+- **Go 1.23 or newer** to build and run Sequent.
+- **Foundry (`forge`)** to compile your contracts into artifacts, and to run the
+  reproduction tests Sequent generates. Sequent itself needs no external tool at
+  runtime once you have an artifact, or an ABI and bytecode.
+
+### Install
+
+```sh
+git clone https://github.com/Hijanhv/Sequent.git
+cd Sequent
+go build -o sequent ./cmd/sequent
+```
+
+That produces a `sequent` binary. The examples below use `go run ./cmd/sequent`
+so they work without building; substitute `./sequent` if you built the binary.
+
+### Quick start
+
 There is a ready-to-run example under `examples/vault`:
 
 ```sh
@@ -214,7 +236,8 @@ cd examples/vault && forge build
 go run ../../cmd/sequent analyze out/Vault.sol/Vault.json
 ```
 
-For your own contract, build it with Foundry and point Sequent at the artifact:
+For your own contract, build it with Foundry and point Sequent at the artifact
+(it lives under `out/<File>.sol/<Contract>.json`):
 
 ```sh
 forge build
@@ -249,17 +272,38 @@ instead of an artifact:
 go run ./cmd/sequent analyze --abi Vault.abi --bin Vault.bin
 ```
 
+### Command reference
+
+```
+sequent analyze [flags] <foundry-artifact.json>
+sequent analyze [flags] --abi <file> --bin <file>
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--json` | Print findings as JSON instead of text, for CI or other tools. |
+| `--tests <dir>` | Write a Foundry reproduction test for the confirmed findings into `<dir>`. |
+| `--abi <file>` | Path to the ABI JSON array (use with `--bin` instead of an artifact). |
+| `--bin <file>` | Path to the creation bytecode hex (use with `--abi`). |
+
+The command exits `0` on success, `1` on an analysis error (for example a
+contract that cannot be deployed), and `2` on incorrect usage.
+
 Sequent deploys the contract into its in-memory EVM, calls each function, and
 prints the ordering dependencies it found:
 
 ```
 Findings (most severe first):
   HIGH   deposit() -> balanceOf(address)   reader value 0 -> 1 (change +1)
+  HIGH   deposit() -> balances(address)    reader value 0 -> 1 (change +1)
   HIGH   deposit() -> total()              reader value 0 -> 1 (change +1)
   HIGH   deposit() -> withdraw()           reverted -> succeeded
 
-Summary: 3 high, 0 medium, 0 low (of 3 dependencies).
+Summary: 4 high, 0 medium, 0 low (of 4 dependencies).
 ```
+
+(`balances(address)` is the public getter Solidity generates for the `balances`
+mapping, so it appears alongside the explicit `balanceOf`.)
 
 Each line is a pair where the writer changes storage the reader depends on,
 ranked by how serious the effect is:
@@ -327,7 +371,6 @@ Sequent is under active development. Built and tested today:
   ordered list of boxes a function read and wrote.
 - `internal/graph`: the interaction-graph engine that turns those traces into
   the `A -> B` ordering arrows described above.
-
 - `internal/evm`: the embedded EVM. It deploys a contract into in-memory state,
   runs it, and records every storage read and write with the exact slot. All
   three stages above are done and tested.
@@ -364,6 +407,19 @@ make check   # gofmt, go vet, and tests
 make test    # tests only
 make build   # compile all packages
 ```
+
+## About the author
+
+Sequent was designed and built by Janhavi Chavada, a Go and Rust developer
+focused on distributed systems and blockchain infrastructure. This project is
+hands-on work across EVM internals, static and dynamic program analysis, parallel
+execution, and clean, thoroughly tested Go.
+
+I am actively looking for a role as a **backend, blockchain, or full-stack
+developer**, working primarily in **Go** or **Rust**, and I am available to start
+immediately. I am based in **Bangalore, India**, and open to remote work.
+
+- GitHub: [@Hijanhv](https://github.com/Hijanhv)
 
 ## License
 

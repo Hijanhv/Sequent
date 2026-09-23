@@ -107,23 +107,32 @@ func edgeExists(g graph.Graph, writer, reader string) bool {
 	return false
 }
 
-// compileVault builds the test Vault with Foundry and returns its bytecode and
-// parsed ABI. It fails the test on a genuine build error.
+// compileVault compiles the test Vault and returns its bytecode and parsed ABI.
 func compileVault(t *testing.T) ([]byte, abi.ABI) {
+	return compileContract(t, "Vault", vaultSource)
+}
+
+// compileContract compiles a single-contract source with Foundry and returns its
+// creation bytecode and parsed ABI. The Solidity contract must be named name. It
+// skips the test when forge is unavailable and fails on a genuine build error.
+func compileContract(t *testing.T, name, source string) ([]byte, abi.ABI) {
 	t.Helper()
+	if _, err := exec.LookPath("forge"); err != nil {
+		t.Skip("forge not installed; skipping integration test")
+	}
 
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	writeFile(t, filepath.Join(dir, "foundry.toml"), "[profile.default]\nsrc = \"src\"\nout = \"out\"\n")
-	writeFile(t, filepath.Join(dir, "src", "Vault.sol"), vaultSource)
+	writeFile(t, filepath.Join(dir, "src", name+".sol"), source)
 
 	if out, err := exec.Command("forge", "build", "--root", dir).CombinedOutput(); err != nil {
 		t.Skipf("forge build failed (environment issue): %v\n%s", err, out)
 	}
 
-	c, err := contract.FromFoundryArtifact(filepath.Join(dir, "out", "Vault.sol", "Vault.json"))
+	c, err := contract.FromFoundryArtifact(filepath.Join(dir, "out", name+".sol", name+".json"))
 	if err != nil {
 		t.Fatalf("load artifact: %v", err)
 	}
