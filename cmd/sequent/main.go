@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -99,24 +100,133 @@ func printReport(out io.Writer, path string, analyzed int, skipped []analyze.Ski
 		byEdge[edgeKey(imp.Writer, imp.Reader)] = imp
 	}
 
-	confirmed := 0
-	fmt.Fprintln(out, "Ordering dependencies (Writer -> Reader):")
+	findings := make([]finding, 0, len(g.Edges))
 	for _, e := range g.Edges {
-		if imp := byEdge[edgeKey(e.Writer, e.Reader)]; imp.Confirmed {
-			confirmed++
-			fmt.Fprintf(out, "  %-11s %s -> %s   reader output %s -> %s\n",
-				"[confirmed]", e.Writer, e.Reader, formatOutput(imp.Before), formatOutput(imp.After))
-		} else {
-			fmt.Fprintf(out, "  %-11s %s -> %s   slots: %s\n",
-				"[shared]", e.Writer, e.Reader, formatSlots(e.Slots))
+		imp := byEdge[edgeKey(e.Writer, e.Reader)]
+		findings = append(findings, finding{edge: e, impact: imp, sev: classify(imp)})
+	}
+	rankFindings(findings)
+
+	var high, medium, low int
+	fmt.Fprintln(out, "Findings (most severe first):")
+	for _, f := range findings {
+		switch f.sev {
+		case sevHigh:
+			high++
+		case sevMedium:
+			medium++
+		default:
+			low++
 		}
+		fmt.Fprintf(out, "  %-6s %s -> %s   %s\n", f.sev, f.edge.Writer, f.edge.Reader, describe(f))
 	}
 
-	fmt.Fprintf(out, "\n%d %s found: %d confirmed to change the reader's output, %d sharing state only.\n",
-		len(g.Edges), dependencyWord(len(g.Edges)), confirmed, len(g.Edges)-confirmed)
-	fmt.Fprintln(out, "Confirmed means running the writer first provably changes what the reader returns.")
+	fmt.Fprintf(out, "\nSummary: %d high, %d medium, %d low (of %d %s).\n",
+		high, medium, low, len(findings), dependencyWord(len(findings)))
+	fmt.Fprintln(out, "High: ordering provably changes a value the reader returns, or flips it between")
+	fmt.Fprintln(out, "reverting and succeeding. Low: shares state but no effect was observed.")
 
 	printSkipped(out, skipped)
+}
+
+// finding pairs a dependency edge with the measured impact of reordering it.
+type finding struct {
+	edge   graph.Edge
+	impact analyze.Impact
+	sev    severity
+}
+
+type severity int
+
+const (
+	sevLow severity = iota
+	sevMedium
+	sevHigh
+)
+
+func (s severity) String() string {
+	switch s {
+	case sevHigh:
+		return "HIGH"
+	case sevMedium:
+		return "MEDIUM"
+	default:
+		return "LOW"
+	}
+}
+
+// classify scores a dependency. Moving a value the reader returns, or flipping it
+// between reverting and succeeding, is the clearest exploitable effect and ranks
+// highest. A confirmed but less legible change is medium. A shared slot with no
+// observed effect is low: a lead, not a finding.
+func classify(imp analyze.Impact) severity {
+	if !imp.Confirmed {
+		return sevLow
+	}
+	if imp.BeforeReverted != imp.AfterReverted {
+		return sevHigh
+	}
+	if imp.Delta != nil && imp.Delta.Sign() != 0 {
+		return sevHigh
+	}
+	return sevMedium
+}
+
+// rankFindings orders findings by severity, then by the magnitude of the value
+// change, then by name, so the output is deterministic and the worst is first.
+func rankFindings(findings []finding) {
+	sort.SliceStable(findings, func(i, j int) bool {
+		if findings[i].sev != findings[j].sev {
+			return findings[i].sev > findings[j].sev
+		}
+		mi, mj := magnitude(findings[i].impact), magnitude(findings[j].impact)
+		if c := mi.Cmp(mj); c != 0 {
+			return c > 0
+		}
+		if findings[i].edge.Writer != findings[j].edge.Writer {
+			return findings[i].edge.Writer < findings[j].edge.Writer
+		}
+		return findings[i].edge.Reader < findings[j].edge.Reader
+	})
+}
+
+// magnitude is the absolute value of a finding's numeric delta, or zero when
+// there is none.
+func magnitude(imp analyze.Impact) *big.Int {
+	if imp.Delta == nil {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Abs(imp.Delta)
+}
+
+// describe renders the human-readable effect of a finding.
+func describe(f finding) string {
+	imp := f.impact
+	if !imp.Confirmed {
+		return fmt.Sprintf("shares slots %s (no effect observed)", formatSlots(f.edge.Slots))
+	}
+	if imp.BeforeReverted != imp.AfterReverted {
+		return revertState(imp.BeforeReverted) + " -> " + revertState(imp.AfterReverted)
+	}
+	if imp.Delta != nil {
+		return fmt.Sprintf("reader value %s -> %s (change %s)",
+			formatOutput(imp.Before), formatOutput(imp.After), signedDecimal(imp.Delta))
+	}
+	return fmt.Sprintf("reader output %s -> %s", formatOutput(imp.Before), formatOutput(imp.After))
+}
+
+func revertState(reverted bool) string {
+	if reverted {
+		return "reverted"
+	}
+	return "succeeded"
+}
+
+func signedDecimal(n *big.Int) string {
+	if n.Sign() >= 0 {
+		return "+" + n.String()
+	}
+	return n.String()
 }
 
 func printSkipped(out io.Writer, skipped []analyze.SkippedFunction) {

@@ -66,9 +66,13 @@ func TestAnalyzeRealContract(t *testing.T) {
 	if !strings.Contains(out.String(), "deposit() -> balanceOf(address)") {
 		t.Fatalf("expected a deposit() -> balanceOf(address) dependency, got:\n%s", out.String())
 	}
-	// Scenario evaluation must confirm at least one dependency by reordering.
-	if !strings.Contains(out.String(), "[confirmed]") {
-		t.Fatalf("expected at least one [confirmed] dependency, got:\n%s", out.String())
+	// Scenario evaluation quantifies the effect, so the mapping edge is a HIGH
+	// finding with a numeric value change.
+	if !strings.Contains(out.String(), "HIGH") {
+		t.Fatalf("expected at least one HIGH finding, got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "change +1") {
+		t.Fatalf("expected a quantified value change, got:\n%s", out.String())
 	}
 }
 

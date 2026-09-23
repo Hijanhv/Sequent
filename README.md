@@ -127,39 +127,50 @@ Sequent deploys the contract into its in-memory EVM, calls each function, and
 prints the ordering dependencies it found:
 
 ```
-Ordering dependencies (Writer -> Reader):
-  [confirmed] deposit() -> balanceOf(address)   reader output 0 -> 1
-  [confirmed] deposit() -> total()              reader output 0 -> 1
-  [confirmed] deposit() -> withdraw()           reader output 0x4e487b71... -> (no output)
+Findings (most severe first):
+  HIGH   deposit() -> balanceOf(address)   reader value 0 -> 1 (change +1)
+  HIGH   deposit() -> total()              reader value 0 -> 1 (change +1)
+  HIGH   deposit() -> withdraw()           reverted -> succeeded
 
-4 dependencies found: 4 confirmed to change the reader's output, 0 sharing state only.
+Summary: 3 high, 0 medium, 0 low (of 3 dependencies).
 ```
 
-Each line is a pair where the writer changes storage the reader depends on. The
-tag says how sure Sequent is:
+Each line is a pair where the writer changes storage the reader depends on,
+ranked by how serious the effect is:
 
-- **[confirmed]** means Sequent actually ran the writer just before the reader
-  and watched the reader's answer change. The `reader output` values are the
-  before and after. In the example, calling `deposit` first turns a `balanceOf`
-  answer from 0 into 1, and turns a `withdraw` that used to fail into one that
-  succeeds. This is a proven ordering effect, not a guess.
-- **[shared]** means the two touch the same storage slot, so an effect is
-  possible, but Sequent's inputs did not manage to make the reader's answer
-  change. It is a lead to look at by hand, not a confirmed finding.
+- **HIGH** means ordering provably changes a value the reader returns, shown as
+  the before and after with the numeric change, or flips the reader between
+  reverting and succeeding. In the example, calling `deposit` first turns a
+  `balanceOf` answer from 0 into 1, and turns a `withdraw` that used to fail into
+  one that succeeds. These are proven ordering effects, not guesses.
+- **MEDIUM** means ordering was confirmed to change the reader's output, but not
+  in the clean numeric form above (for example a struct or a byte string).
+- **LOW** means the two touch the same storage slot, so an effect is possible,
+  but Sequent's inputs did not make the reader's answer change. It is a lead to
+  look at by hand, not a confirmed finding.
 
-### From "they share state" to "order provably changes the outcome"
+### From "they share state" to "how much order moves the value"
 
 Sharing a storage slot only says an effect is possible. To tell whether it is
-real, Sequent replays the two functions in both orders. It runs the reader on its
-own and records the answer, then runs the writer immediately before the reader
-and records the answer again. If the two answers differ, the writer really does
-move what the reader sees, and the dependency is marked confirmed with the exact
-before and after values.
+real, and how big it is, Sequent replays the two functions in both orders. It
+runs the reader on its own and records the answer, then runs the writer
+immediately before the reader and records the answer again. If the two answers
+differ, the writer really does move what the reader sees.
 
-This is what separates a genuine finding from noise. A large contract has many
-functions that happen to touch the same slot without one being able to
-meaningfully influence the other; confirmation filters those out and shows, in
-concrete numbers, the ones where transaction order changes the result.
+When the reader returns a single 32-byte word, which is the shape of a balance,
+a price, a reserve, or a supply, Sequent reports the signed change between the
+two orderings and ranks findings by its size. That size is the concrete measure
+of the effect: how far an attacker can move the value the victim reads by placing
+their transaction first. This filters real findings out of the noise, because a
+large contract has many functions that touch the same slot without one being able
+to meaningfully move the other.
+
+A note on scope: this size is measured in the units the contract itself reports,
+not converted into a single priced asset like ETH or a dollar figure. Pricing an
+arbitrary token requires a live market and an external price source, which a
+single-contract sandbox does not have. Putting a common-asset price on the
+effect, for contracts where that is well defined, is a planned next step; this
+stage gives the exact, honest magnitude that such a price would be built on.
 
 ### How arguments are chosen
 
@@ -198,20 +209,23 @@ Sequent is under active development. Built and tested today:
   from a clean baseline, and feeds the traces into the graph. It calls each
   function with several argument value sets, in parallel across independent EVMs,
   and unions the storage each function touches. It also confirms dependencies by
-  replaying each writer-then-reader pair and comparing the reader's output.
+  replaying each writer-then-reader pair, and measures the signed change in the
+  reader's value so findings can be ranked.
 - `internal/contract`: loads a compiled contract. The first loader reads a
   Foundry build artifact.
 - `cmd/sequent`: the command-line tool. `sequent analyze <artifact.json>` prints
-  the ordering dependencies for a contract.
+  the ordering dependencies for a contract, ranked by severity with the measured
+  effect of each.
 
 Planned:
 
 - More loaders: separate ABI and bytecode files, and fetching a deployed
   contract's bytecode from a live chain by address.
-- Putting a number on each confirmed dependency: how much value an attacker
-  could extract, priced in a common asset, on top of the output change Sequent
-  already shows.
-- A report that ranks findings by severity and ships a runnable test for each.
+- Pricing the measured effect in a common asset like ETH, for contracts where a
+  market model makes that well defined, on top of the raw magnitude Sequent
+  already reports.
+- A machine-readable report (JSON or SARIF) and a runnable test per finding, so
+  results drop into CI.
 
 ## Development
 

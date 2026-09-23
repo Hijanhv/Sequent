@@ -3,6 +3,7 @@ package analyze
 import (
 	"bytes"
 	"fmt"
+	"math/big"
 	"sort"
 	"sync"
 
@@ -15,18 +16,27 @@ import (
 
 // Impact is the result of testing one dependency edge by actually reordering the
 // two functions. Confirmed is true when running the writer before the reader
-// changes what the reader returns, compared with running the reader alone. Before
-// and After hold the reader's output in those two orderings, so a report can show
-// the concrete change.
+// changes what the reader does, compared with running the reader alone: either
+// its returned bytes change, or it flips between reverting and succeeding.
+//
+// Before and After hold the reader's output in the two orderings, and the
+// Reverted flags say whether each ordering reverted. Delta is the signed change
+// in the reader's value when both orderings succeed and return a single 32-byte
+// word, which is the common shape of a balance, price, reserve, or supply query;
+// it is nil otherwise. Delta is how much ordering moves the value the victim
+// reads, and it is what findings are ranked by.
 //
 // A shared storage slot only means an effect is possible. Confirmed means the
 // effect was observed: the writer really does move what the victim reads.
 type Impact struct {
-	Writer    string
-	Reader    string
-	Confirmed bool
-	Before    []byte
-	After     []byte
+	Writer         string
+	Reader         string
+	Confirmed      bool
+	Before         []byte
+	After          []byte
+	BeforeReverted bool
+	AfterReverted  bool
+	Delta          *big.Int
 }
 
 // Evaluate tests each edge by front-running: it runs the reader alone, then runs
@@ -116,19 +126,27 @@ func runEdges(bytecode []byte, deployer, caller common.Address, edges []graph.Ed
 	return results, nil
 }
 
+// callOutcome is a reader call's observable result: what it returned and whether
+// it reverted.
+type callOutcome struct {
+	output   []byte
+	reverted bool
+}
+
 // evalEdge tries the writer and reader argument variants against each other and
-// returns the first pairing where the writer changes the reader's output.
+// returns the first pairing where the writer changes what the reader does.
 func evalEdge(e *evm.Executor, caller, addr common.Address, edge graph.Edge, variants map[string][][]byte) Impact {
 	imp := Impact{Writer: edge.Writer, Reader: edge.Reader}
 
 	for _, writerCall := range variants[edge.Writer] {
 		for _, readerCall := range variants[edge.Reader] {
-			before := readerOutput(e, caller, addr, readerCall)
-			after := writerThenReaderOutput(e, caller, addr, writerCall, readerCall)
-			if !bytes.Equal(before, after) {
+			before := readerAlone(e, caller, addr, readerCall)
+			after := writerThenReader(e, caller, addr, writerCall, readerCall)
+			if changed(before, after) {
 				imp.Confirmed = true
-				imp.Before = before
-				imp.After = after
+				imp.Before, imp.BeforeReverted = before.output, before.reverted
+				imp.After, imp.AfterReverted = after.output, after.reverted
+				imp.Delta = valueDelta(before, after)
 				return imp
 			}
 		}
@@ -136,18 +154,40 @@ func evalEdge(e *evm.Executor, caller, addr common.Address, edge graph.Edge, var
 	return imp
 }
 
-// readerOutput runs the reader alone from a clean baseline.
-func readerOutput(e *evm.Executor, caller, addr common.Address, readerCall []byte) []byte {
-	snap := e.Snapshot()
-	defer e.RevertToSnapshot(snap)
-	return e.Call(caller, addr, readerCall).Output
+// changed reports whether the reader behaved differently across the two
+// orderings, either in what it returned or in whether it reverted.
+func changed(a, b callOutcome) bool {
+	return a.reverted != b.reverted || !bytes.Equal(a.output, b.output)
 }
 
-// writerThenReaderOutput runs the writer and then the reader in one sequence, so
-// the reader sees the writer's state changes, then rewinds both.
-func writerThenReaderOutput(e *evm.Executor, caller, addr common.Address, writerCall, readerCall []byte) []byte {
+// valueDelta is the signed change in the reader's value, defined only when both
+// orderings succeed and return a single 32-byte word.
+func valueDelta(before, after callOutcome) *big.Int {
+	if before.reverted || after.reverted {
+		return nil
+	}
+	if len(before.output) != 32 || len(after.output) != 32 {
+		return nil
+	}
+	b := new(big.Int).SetBytes(before.output)
+	a := new(big.Int).SetBytes(after.output)
+	return new(big.Int).Sub(a, b)
+}
+
+// readerAlone runs the reader by itself from a clean baseline.
+func readerAlone(e *evm.Executor, caller, addr common.Address, readerCall []byte) callOutcome {
+	snap := e.Snapshot()
+	defer e.RevertToSnapshot(snap)
+	res := e.Call(caller, addr, readerCall)
+	return callOutcome{output: res.Output, reverted: res.Err != nil}
+}
+
+// writerThenReader runs the writer and then the reader in one sequence, so the
+// reader sees the writer's state changes, then rewinds both.
+func writerThenReader(e *evm.Executor, caller, addr common.Address, writerCall, readerCall []byte) callOutcome {
 	snap := e.Snapshot()
 	defer e.RevertToSnapshot(snap)
 	e.Call(caller, addr, writerCall)
-	return e.Call(caller, addr, readerCall).Output
+	res := e.Call(caller, addr, readerCall)
+	return callOutcome{output: res.Output, reverted: res.Err != nil}
 }
