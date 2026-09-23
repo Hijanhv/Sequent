@@ -97,10 +97,12 @@ Sequent is under active development. Built and tested today:
 - `internal/graph`: the interaction-graph engine that turns those traces into
   the `A -> B` ordering arrows described above.
 
-In progress:
-
-- `internal/evm`: the embedded EVM that produces real traces from a compiled
-  contract (being built in the three stages listed above).
+- `internal/evm`: the embedded EVM. It deploys a contract into in-memory state,
+  runs it, and records every storage read and write with the exact slot. All
+  three stages above are done and tested.
+- `internal/analyze`: drives each function of a deployed contract from a clean
+  baseline, collects its storage trace, and feeds the traces into the graph.
+  This is the full pipeline from bytecode to ordering arrows.
 
 Planned:
 

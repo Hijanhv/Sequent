@@ -101,6 +101,18 @@ func (e *Executor) Code(addr common.Address) []byte {
 	return e.state.GetCode(addr)
 }
 
+// Snapshot records the current state and returns an identifier that
+// RevertToSnapshot can restore it to. This lets a caller run one function, look
+// at what it did, and rewind to a clean baseline before running the next.
+func (e *Executor) Snapshot() int {
+	return e.state.Snapshot()
+}
+
+// RevertToSnapshot rewinds state to the point the given snapshot was taken.
+func (e *Executor) RevertToSnapshot(id int) {
+	e.state.RevertToSnapshot(id)
+}
+
 // newEVM builds an EVM bound to the current state with origin as the sender.
 // A nil tracer means no tracing.
 func (e *Executor) newEVM(origin common.Address, tracer *tracing.Hooks) *vm.EVM {
