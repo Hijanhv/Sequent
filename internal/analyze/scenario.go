@@ -43,6 +43,16 @@ type Impact struct {
 	// when the edge is not confirmed.
 	WriterCall []byte
 	ReaderCall []byte
+
+	// MaxRepeats and MaxDelta describe a stacked, multi-transaction front-run:
+	// running the writer more than once before the reader. MaxRepeats is the
+	// number of writer transactions that produced the largest value change, and
+	// MaxDelta is that change. When MaxRepeats is greater than 1 the effect
+	// compounds, so an attacker who sends several transactions ahead of the
+	// victim does more damage than one. They are set only for value-change
+	// findings; MaxRepeats defaults to 1.
+	MaxRepeats int
+	MaxDelta   *big.Int
 }
 
 // Evaluate tests each edge by front-running: it runs the reader alone, then runs
@@ -72,7 +82,7 @@ func Evaluate(bytecode []byte, a abi.ABI, deployer, caller common.Address, edges
 		return nil, fmt.Errorf("deploy contract: %w", err)
 	}
 
-	results, err := runEdges(bytecode, deployer, caller, edges, variants, cfg.workers(len(edges)))
+	results, err := runEdges(bytecode, deployer, caller, edges, variants, cfg.workers(len(edges)), cfg.maxRepeats())
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +95,7 @@ func Evaluate(bytecode []byte, a abi.ABI, deployer, caller common.Address, edges
 	return results, nil
 }
 
-func runEdges(bytecode []byte, deployer, caller common.Address, edges []graph.Edge, variants map[string][][]byte, workers int) ([]Impact, error) {
+func runEdges(bytecode []byte, deployer, caller common.Address, edges []graph.Edge, variants map[string][][]byte, workers, maxRepeats int) ([]Impact, error) {
 	edgeCh := make(chan graph.Edge, len(edges))
 	for _, e := range edges {
 		edgeCh <- e
@@ -112,7 +122,7 @@ func runEdges(bytecode []byte, deployer, caller common.Address, edges []graph.Ed
 				return
 			}
 			for edge := range edgeCh {
-				resCh <- evalEdge(e, caller, addr, edge, variants)
+				resCh <- evalEdge(e, caller, addr, edge, variants, maxRepeats)
 			}
 		}()
 	}
@@ -140,8 +150,10 @@ type callOutcome struct {
 }
 
 // evalEdge tries the writer and reader argument variants against each other and
-// returns the first pairing where the writer changes what the reader does.
-func evalEdge(e *evm.Executor, caller, addr common.Address, edge graph.Edge, variants map[string][][]byte) Impact {
+// returns the first pairing where the writer changes what the reader does. For a
+// value-change finding it then measures whether stacking the writer (running it
+// more than once before the reader) compounds the effect.
+func evalEdge(e *evm.Executor, caller, addr common.Address, edge graph.Edge, variants map[string][][]byte, maxRepeats int) Impact {
 	imp := Impact{Writer: edge.Writer, Reader: edge.Reader}
 
 	for _, writerCall := range variants[edge.Writer] {
@@ -155,11 +167,38 @@ func evalEdge(e *evm.Executor, caller, addr common.Address, edge graph.Edge, var
 				imp.Delta = valueDelta(before, after)
 				imp.WriterCall = writerCall
 				imp.ReaderCall = readerCall
+				imp.MaxRepeats, imp.MaxDelta = measureAmplification(e, caller, addr, writerCall, readerCall, before, imp.Delta, maxRepeats)
 				return imp
 			}
 		}
 	}
 	return imp
+}
+
+// measureAmplification checks whether running the writer more than once before
+// the reader increases the value change. It returns the repeat count with the
+// largest change and that change. For anything but a value-change finding it
+// returns (1, delta), meaning no amplification was measured.
+func measureAmplification(e *evm.Executor, caller, addr common.Address, writerCall, readerCall []byte, before callOutcome, delta *big.Int, maxRepeats int) (int, *big.Int) {
+	if delta == nil {
+		return 1, delta
+	}
+
+	baseline := new(big.Int).SetBytes(before.output)
+	bestRepeats := 1
+	bestDelta := delta
+	for r := 2; r <= maxRepeats; r++ {
+		out := writerRepeatedThenReader(e, caller, addr, writerCall, readerCall, r)
+		if out.reverted || len(out.output) != 32 {
+			break
+		}
+		d := new(big.Int).Sub(new(big.Int).SetBytes(out.output), baseline)
+		if d.CmpAbs(bestDelta) > 0 {
+			bestDelta = d
+			bestRepeats = r
+		}
+	}
+	return bestRepeats, bestDelta
 }
 
 // changed reports whether the reader behaved differently across the two
@@ -193,9 +232,18 @@ func readerAlone(e *evm.Executor, caller, addr common.Address, readerCall []byte
 // writerThenReader runs the writer and then the reader in one sequence, so the
 // reader sees the writer's state changes, then rewinds both.
 func writerThenReader(e *evm.Executor, caller, addr common.Address, writerCall, readerCall []byte) callOutcome {
+	return writerRepeatedThenReader(e, caller, addr, writerCall, readerCall, 1)
+}
+
+// writerRepeatedThenReader runs the writer times times and then the reader in one
+// sequence, modelling an attacker who sends several transactions before the
+// victim, then rewinds all of it.
+func writerRepeatedThenReader(e *evm.Executor, caller, addr common.Address, writerCall, readerCall []byte, times int) callOutcome {
 	snap := e.Snapshot()
 	defer e.RevertToSnapshot(snap)
-	e.Call(caller, addr, writerCall)
+	for i := 0; i < times; i++ {
+		e.Call(caller, addr, writerCall)
+	}
 	res := e.Call(caller, addr, readerCall)
 	return callOutcome{output: res.Output, reverted: res.Err != nil}
 }

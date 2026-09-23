@@ -119,7 +119,21 @@ hands back a ranked list of findings plus a test that reproduces each one.
 6. **Report.** Confirmed effects are ranked by how serious they are (moving a
    value the reader returns, or flipping it between reverting and succeeding,
    ranks highest), printed as text or JSON, and turned into a Foundry test that
-   replays the two orderings so anyone can run the proof.
+   replays the orderings so anyone can run the proof.
+
+Two things build on this core:
+
+- **Stacked front-running.** A sandwich or a spam attack sends more than one
+  transaction ahead of the victim. For a value-changing finding, Sequent also
+  runs the attacker function several times before the reader and reports when the
+  effect compounds, for example a change of +1 from one call growing to +3 over
+  three. A one-time effect and one that gets worse the more you spam it are very
+  different risks, and Sequent tells them apart.
+- **Regression guards.** Besides the reproduction test (which passes while the
+  flaw is live), Sequent can emit a guard test that deploys the live source and
+  asserts the effect is gone. It fails today and passes once you fix the
+  contract, and it keeps failing if the bug is ever reintroduced, so it stays
+  useful in the repo long after the scan.
 
 ### Where each step lives in the code
 
@@ -261,9 +275,22 @@ forge test
 
 Each generated test deploys the contract twice, runs the reader on its own and
 again after the writer, and asserts the reader's result changed. It is proof an
-auditor or a developer can run, and it doubles as a regression check once the
-issue is fixed. The file depends only on Foundry's built-in cheatcodes, not on
-forge-std, so it compiles in any Foundry project.
+auditor or a developer can run. The file depends only on Foundry's built-in
+cheatcodes, not on forge-std, so it compiles in any Foundry project.
+
+Add `--guard-tests <dir>` to also write regression guards. Unlike the
+reproduction test, a guard deploys your live contract from source and asserts the
+effect is gone, so it fails now and passes once you fix the issue, then guards
+against the bug returning:
+
+```sh
+go run ./cmd/sequent analyze --guard-tests test out/Vault.sol/Vault.json
+forge test   # guard tests fail until you fix the ordering issue, then pass
+```
+
+Guard tests import the source (by default `src/<File>.sol`, overridable with
+`--src`), so they are only available when analyzing a Foundry artifact, not the
+`--abi`/`--bin` inputs.
 
 If you are not on Foundry, point Sequent at a separate ABI file and bytecode file
 instead of an artifact:
@@ -282,7 +309,9 @@ sequent analyze [flags] --abi <file> --bin <file>
 | Flag | Meaning |
 | --- | --- |
 | `--json` | Print findings as JSON instead of text, for CI or other tools. |
-| `--tests <dir>` | Write a Foundry reproduction test for the confirmed findings into `<dir>`. |
+| `--tests <dir>` | Write Foundry reproduction tests (pass while the flaw exists) into `<dir>`. |
+| `--guard-tests <dir>` | Write Foundry regression guards (pass once fixed) into `<dir>`. |
+| `--src <path>` | Source import path for guard tests (default `src/<File>.sol`). |
 | `--abi <file>` | Path to the ABI JSON array (use with `--bin` instead of an artifact). |
 | `--bin <file>` | Path to the creation bytecode hex (use with `--abi`). |
 
@@ -294,9 +323,9 @@ prints the ordering dependencies it found:
 
 ```
 Findings (most severe first):
-  HIGH   deposit() -> balanceOf(address)   reader value 0 -> 1 (change +1)
-  HIGH   deposit() -> balances(address)    reader value 0 -> 1 (change +1)
-  HIGH   deposit() -> total()              reader value 0 -> 1 (change +1)
+  HIGH   deposit() -> balanceOf(address)   reader value 0 -> 1 (change +1); compounds to +3 over 3 transactions
+  HIGH   deposit() -> balances(address)    reader value 0 -> 1 (change +1); compounds to +3 over 3 transactions
+  HIGH   deposit() -> total()              reader value 0 -> 1 (change +1); compounds to +3 over 3 transactions
   HIGH   deposit() -> withdraw()           reverted -> succeeded
 
 Summary: 4 high, 0 medium, 0 low (of 4 dependencies).
@@ -378,14 +407,16 @@ Sequent is under active development. Built and tested today:
   from a clean baseline, and feeds the traces into the graph. It calls each
   function with several argument value sets, in parallel across independent EVMs,
   and unions the storage each function touches. It also confirms dependencies by
-  replaying each writer-then-reader pair, and measures the signed change in the
-  reader's value so findings can be ranked.
+  replaying each writer-then-reader pair, measures the signed change in the
+  reader's value so findings can be ranked, and checks whether stacking the
+  writer across several transactions compounds the effect.
 - `internal/contract`: loads a compiled contract, from a Foundry build artifact
   or from separate ABI and bytecode files, behind a shared core.
 - `internal/report`: ranks the dependencies into findings by severity and renders
   them as text or, with `--json`, as machine-readable output for CI.
-- `internal/gentest`: generates a runnable Foundry test that reproduces each
-  confirmed finding.
+- `internal/gentest`: generates runnable Foundry tests for each confirmed
+  finding, both a reproduction (effect present) and a regression guard that
+  deploys the live source (effect absent).
 - `cmd/sequent`: the command-line tool. `sequent analyze <artifact.json>` prints
   the ordering dependencies for a contract, ranked by severity with the measured
   effect of each, and can emit JSON or reproduction tests.

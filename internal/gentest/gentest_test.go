@@ -9,7 +9,7 @@ import (
 )
 
 func TestGenerateNoConfirmedFindings(t *testing.T) {
-	src, n := Generate("Vault", []byte{0x01, 0x02}, []report.Finding{
+	src, n := Generate(Options{ContractName: "Vault", Kind: Proof, CreationCode: []byte{0x01, 0x02}}, []report.Finding{
 		{Writer: "a()", Reader: "b()", Confirmed: false},
 	})
 	if n != 0 || src != "" {
@@ -34,7 +34,7 @@ func TestGenerateProducesTestPerConfirmedFinding(t *testing.T) {
 		{Writer: "x()", Reader: "y()", Confirmed: false},
 	}
 
-	src, n := Generate("Vault", []byte{0xaa, 0xbb}, findings)
+	src, n := Generate(Options{ContractName: "Vault", Kind: Proof, CreationCode: []byte{0xaa, 0xbb}}, findings)
 	if n != 2 {
 		t.Fatalf("expected 2 tests, got %d", n)
 	}
@@ -60,7 +60,7 @@ func TestGenerateProducesTestPerConfirmedFinding(t *testing.T) {
 
 func TestGenerateSkipsConfirmedWithoutCalldata(t *testing.T) {
 	// A confirmed finding with no recorded calldata cannot be reproduced.
-	src, n := Generate("T", []byte{0x01}, []report.Finding{
+	src, n := Generate(Options{ContractName: "T", Kind: Proof, CreationCode: []byte{0x01}}, []report.Finding{
 		{Writer: "a()", Reader: "b()", Confirmed: true},
 	})
 	if n != 0 || src != "" {
@@ -73,7 +73,7 @@ func TestGenerateUniqueFunctionNames(t *testing.T) {
 		{Writer: "f()", Reader: "g()", Confirmed: true, WriterCall: []byte{0x01}, ReaderCall: []byte{0x02}},
 		{Writer: "f()", Reader: "g()", Confirmed: true, WriterCall: []byte{0x01}, ReaderCall: []byte{0x02}},
 	}
-	src, n := Generate("T", []byte{0x01}, findings)
+	src, n := Generate(Options{ContractName: "T", Kind: Proof, CreationCode: []byte{0x01}}, findings)
 	if n != 2 {
 		t.Fatalf("expected 2 tests, got %d", n)
 	}
@@ -82,6 +82,39 @@ func TestGenerateUniqueFunctionNames(t *testing.T) {
 	}
 	if !strings.Contains(src, "function test_f_before_g_2() public") {
 		t.Fatalf("missing de-duplicated second test name:\n%s", src)
+	}
+}
+
+func TestGenerateGuardKind(t *testing.T) {
+	findings := []report.Finding{
+		{
+			Writer: "deposit()", Reader: "balanceOf(address)", Confirmed: true,
+			Effect: "value-change", Delta: big.NewInt(1),
+			WriterCall: []byte{0xd0, 0xe3, 0x0d, 0xb0},
+			ReaderCall: []byte{0x70, 0xa0, 0x82, 0x31},
+		},
+	}
+	src, n := Generate(Options{ContractName: "Vault", Kind: Guard, SourceImport: "src/Vault.sol"}, findings)
+	if n != 1 {
+		t.Fatalf("expected 1 guard test, got %d", n)
+	}
+
+	wants := []string{
+		"contract VaultSequentGuard",
+		`import {Vault} from "src/Vault.sol";`,
+		"type(Vault).creationCode",
+		"function test_deposit_before_balanceOf_address_is_fixed() public",
+		"reordering still changes the reader (regression)",
+		"okBefore == okAfter && keccak256(outBefore) == keccak256(outAfter)",
+	}
+	for _, w := range wants {
+		if !strings.Contains(src, w) {
+			t.Fatalf("guard source missing %q; got:\n%s", w, src)
+		}
+	}
+	// A guard test must assert the opposite of a proof test.
+	if strings.Contains(src, "reordering did not change the reader") {
+		t.Fatalf("guard test should not contain the proof assertion:\n%s", src)
 	}
 }
 

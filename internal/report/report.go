@@ -55,6 +55,13 @@ type Finding struct {
 	// effect, used to generate a reproduction test.
 	WriterCall []byte
 	ReaderCall []byte
+
+	// MaxRepeats and MaxDelta describe a stacked, multi-transaction front-run:
+	// when MaxRepeats is greater than 1, running the writer that many times before
+	// the reader produces the larger change MaxDelta, so the effect compounds
+	// across transactions.
+	MaxRepeats int
+	MaxDelta   *big.Int
 }
 
 // Skipped names a function that could not be analyzed.
@@ -98,6 +105,8 @@ func Build(contract string, analyzed int, skipped []analyze.SkippedFunction, g g
 			Slots:          e.Slots,
 			WriterCall:     imp.WriterCall,
 			ReaderCall:     imp.ReaderCall,
+			MaxRepeats:     imp.MaxRepeats,
+			MaxDelta:       imp.MaxDelta,
 		})
 	}
 	rank(findings)
@@ -219,8 +228,12 @@ func describe(f Finding) string {
 		return revertState(f.BeforeReverted) + " -> " + revertState(f.AfterReverted)
 	}
 	if f.Delta != nil {
-		return fmt.Sprintf("reader value %s -> %s (change %s)",
+		base := fmt.Sprintf("reader value %s -> %s (change %s)",
 			formatOutput(f.Before), formatOutput(f.After), signedDecimal(f.Delta))
+		if f.MaxRepeats > 1 && f.MaxDelta != nil {
+			base += fmt.Sprintf("; compounds to %s over %d transactions", signedDecimal(f.MaxDelta), f.MaxRepeats)
+		}
+		return base
 	}
 	return fmt.Sprintf("reader output %s -> %s", formatOutput(f.Before), formatOutput(f.After))
 }
@@ -249,6 +262,10 @@ func (r Report) WriteJSON(w io.Writer) error {
 		}
 		if f.Delta != nil {
 			jf.Delta = f.Delta.String()
+		}
+		if f.MaxRepeats > 1 && f.MaxDelta != nil {
+			jf.MaxRepeats = f.MaxRepeats
+			jf.MaxDelta = f.MaxDelta.String()
 		}
 		out.Findings = append(out.Findings, jf)
 	}
@@ -280,6 +297,8 @@ type jsonFinding struct {
 	BeforeReverted bool     `json:"beforeReverted"`
 	AfterReverted  bool     `json:"afterReverted"`
 	Delta          string   `json:"delta,omitempty"`
+	MaxRepeats     int      `json:"maxRepeats,omitempty"`
+	MaxDelta       string   `json:"maxDelta,omitempty"`
 	Slots          []string `json:"slots"`
 }
 

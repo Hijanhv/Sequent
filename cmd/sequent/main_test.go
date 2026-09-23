@@ -157,6 +157,54 @@ func TestAnalyzeFromSeparateFiles(t *testing.T) {
 	}
 }
 
+// TestGuardTestsFailThenPassAfterFix generates regression-guard tests, confirms
+// they FAIL on the current (vulnerable) Vault, then rewrites the source with a
+// fixed version and confirms the same guard tests now PASS. Because the guards
+// deploy the live source, they track the fix without being regenerated.
+func TestGuardTestsFailThenPassAfterFix(t *testing.T) {
+	dir, artifact := buildVaultProject(t)
+	testDir := filepath.Join(dir, "test")
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"analyze", "--guard-tests", testDir, artifact}, &out, &errBuf); code != 0 {
+		t.Fatalf("run exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+
+	// On the vulnerable contract the guards must fail.
+	output, err := exec.Command("forge", "test", "--root", dir).CombinedOutput()
+	if err == nil {
+		t.Fatalf("guard tests should fail on the vulnerable contract, but forge test passed:\n%s", output)
+	}
+	if !strings.Contains(string(output), "regression") {
+		t.Fatalf("expected a regression assertion failure, got:\n%s", output)
+	}
+
+	// Fix the source: deposit and withdraw no longer touch shared state, keeping
+	// the same function selectors so the guard calldata still resolves.
+	writeFile(t, filepath.Join(dir, "src", "Vault.sol"), fixedVaultSource)
+
+	output, err = exec.Command("forge", "test", "--root", dir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("guard tests should pass on the fixed contract, but forge test failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "0 failed") {
+		t.Fatalf("expected all guard tests to pass after the fix, got:\n%s", output)
+	}
+}
+
+const fixedVaultSource = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract Vault {
+    mapping(address => uint256) public balances;
+    uint256 public total;
+
+    function deposit() external {}
+    function withdraw() external {}
+    function balanceOf(address a) external view returns (uint256) { return balances[a]; }
+}
+`
+
 // buildVaultProject compiles the test Vault with Foundry and returns the project
 // directory and the path to its build artifact, skipping when forge is absent.
 func buildVaultProject(t *testing.T) (dir, artifact string) {

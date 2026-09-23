@@ -33,11 +33,12 @@ var (
 const usage = `sequent - an MEV exposure scanner for smart contracts
 
 usage:
-  sequent analyze [--json] [--tests <dir>] <foundry-artifact.json>
+  sequent analyze [--json] [--tests <dir>] [--guard-tests <dir>] <foundry-artifact.json>
   sequent analyze [--json] [--tests <dir>] --abi <file> --bin <file>
       analyze a compiled contract, from a Foundry artifact or from separate ABI
-      and bytecode files; --json prints machine-readable findings, --tests writes
-      a Foundry reproduction test for the confirmed findings`
+      and bytecode files. --json prints machine-readable findings; --tests writes
+      Foundry reproduction tests (which pass while the flaw exists); --guard-tests
+      writes regression-guard tests (which pass once it is fixed)`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -64,7 +65,9 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "output findings as JSON")
-	testsDir := fs.String("tests", "", "write a Foundry reproduction test to this directory")
+	testsDir := fs.String("tests", "", "write Foundry reproduction tests (effect present) to this directory")
+	guardDir := fs.String("guard-tests", "", "write Foundry regression-guard tests (effect absent) to this directory")
+	srcImport := fs.String("src", "", "source import path for guard tests, e.g. src/Vault.sol (defaults from the artifact path)")
 	abiPath := fs.String("abi", "", "path to the ABI JSON (use with --bin instead of a Foundry artifact)")
 	binPath := fs.String("bin", "", "path to the creation bytecode hex (use with --abi)")
 	fs.Usage = func() {
@@ -106,12 +109,46 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *testsDir != "" {
-		if err := writeReproTests(*testsDir, path, code, rep, stderr); err != nil {
+		opts := gentest.Options{ContractName: contractName(path), Kind: gentest.Proof, CreationCode: code}
+		if err := writeTests(*testsDir, opts, rep.Findings, stderr); err != nil {
 			fmt.Fprintf(stderr, "sequent: write tests: %v\n", err)
 			return 1
 		}
 	}
+	if *guardDir != "" {
+		name, imp, ok := guardSource(path, *srcImport)
+		if !ok {
+			fmt.Fprintln(stderr, "sequent: guard tests need the contract source; pass --src <path-to-source.sol> (or run on a Foundry artifact)")
+			return 1
+		}
+		opts := gentest.Options{
+			ContractName:    name,
+			Kind:            gentest.Guard,
+			SourceImport:    imp,
+			ConstructorArgs: code[len(c.Bytecode):],
+		}
+		if err := writeTests(*guardDir, opts, rep.Findings, stderr); err != nil {
+			fmt.Fprintf(stderr, "sequent: write guard tests: %v\n", err)
+			return 1
+		}
+	}
 	return 0
+}
+
+// guardSource resolves the Solidity contract name and its source import path for
+// guard tests. An explicit --src override wins; otherwise it derives the path
+// from a Foundry artifact layout (out/<File>.sol/<Name>.json -> src/<File>.sol).
+// It returns ok=false when neither is available, for example with --abi/--bin.
+func guardSource(artifactPath, override string) (name, srcImport string, ok bool) {
+	name = contractName(artifactPath)
+	if override != "" {
+		return name, override, true
+	}
+	parent := filepath.Base(filepath.Dir(artifactPath))
+	if strings.HasSuffix(parent, ".sol") {
+		return name, "src/" + parent, true
+	}
+	return name, "", false
 }
 
 // usageError signals a misuse of the command, which maps to exit code 2.
@@ -156,24 +193,29 @@ func analyzeContract(code []byte, a abi.ABI, path string) (report.Report, error)
 	return report.Build(path, len(fns), skipped, g, impacts), nil
 }
 
-// writeReproTests generates a Foundry test reproducing the confirmed findings and
-// writes it next to the given directory. Progress notes go to notes (stderr) so
-// they never mix into a JSON report on stdout.
-func writeReproTests(dir, artifactPath string, bytecode []byte, rep report.Report, notes io.Writer) error {
-	name := contractName(artifactPath)
-	src, n := gentest.Generate(name, bytecode, rep.Findings)
+// writeTests generates Foundry tests for the confirmed findings and writes them
+// into dir. Progress notes go to notes (stderr) so they never mix into a JSON
+// report on stdout.
+func writeTests(dir string, opts gentest.Options, findings []report.Finding, notes io.Writer) error {
+	src, n := gentest.Generate(opts, findings)
+
+	label, suffix := "reproduction", "SequentRepro"
+	if opts.Kind == gentest.Guard {
+		label, suffix = "regression-guard", "SequentGuard"
+	}
+
 	if n == 0 {
-		fmt.Fprintln(notes, "No confirmed findings; no reproduction test written.")
+		fmt.Fprintf(notes, "No confirmed findings; no %s test written.\n", label)
 		return nil
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	file := filepath.Join(dir, name+"SequentRepro.t.sol")
+	file := filepath.Join(dir, opts.ContractName+suffix+".t.sol")
 	if err := os.WriteFile(file, []byte(src), 0o644); err != nil {
 		return err
 	}
-	fmt.Fprintf(notes, "Wrote %d reproduction test(s) to %s\n", n, file)
+	fmt.Fprintf(notes, "Wrote %d %s test(s) to %s\n", n, label, file)
 	return nil
 }
 

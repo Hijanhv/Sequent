@@ -13,12 +13,16 @@ import (
 	"github.com/Hijanhv/Sequent/internal/trace"
 )
 
-const defaultRounds = 4
+const (
+	defaultRounds     = 4
+	defaultMaxRepeats = 3
+)
 
 // FuzzConfig tunes a fuzzing run. Zero values select sensible defaults.
 type FuzzConfig struct {
-	Rounds  int // argument value sets tried per function
-	Workers int // parallel EVMs; defaults to the number of CPUs
+	Rounds     int // argument value sets tried per function
+	Workers    int // parallel EVMs; defaults to the number of CPUs
+	MaxRepeats int // most times a writer is stacked before a reader when measuring amplification
 }
 
 func (c FuzzConfig) rounds() int {
@@ -26,6 +30,13 @@ func (c FuzzConfig) rounds() int {
 		return c.Rounds
 	}
 	return defaultRounds
+}
+
+func (c FuzzConfig) maxRepeats() int {
+	if c.MaxRepeats > 0 {
+		return c.MaxRepeats
+	}
+	return defaultMaxRepeats
 }
 
 func (c FuzzConfig) workers(jobs int) int {

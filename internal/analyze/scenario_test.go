@@ -44,6 +44,34 @@ func TestEvaluateConfirmsMappingEffect(t *testing.T) {
 	}
 }
 
+func TestEvaluateAmplifiesRepeatedFrontRun(t *testing.T) {
+	bytecode, parsed := compileVault(t)
+
+	deployer := common.HexToAddress("0x00000000000000000000000000000000000d0000")
+	caller := common.HexToAddress("0x000000000000000000000000000000000000cafe")
+
+	fns, _, err := Fuzz(bytecode, parsed, deployer, caller, FuzzConfig{})
+	if err != nil {
+		t.Fatalf("Fuzz: %v", err)
+	}
+	edges := graph.Build(fns).Edges
+
+	impacts, err := Evaluate(bytecode, parsed, deployer, caller, edges, FuzzConfig{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+
+	// deposit adds 1 to balances[caller] per call, so stacking three deposits
+	// before balanceOf compounds the change from +1 to +3.
+	imp := findImpact(t, impacts, "deposit()", "balanceOf(address)")
+	if imp.MaxRepeats <= 1 {
+		t.Fatalf("expected the effect to compound over repeated calls, got MaxRepeats=%d", imp.MaxRepeats)
+	}
+	if imp.MaxDelta == nil || imp.MaxDelta.Cmp(big.NewInt(3)) != 0 {
+		t.Fatalf("expected compounded delta of +3 over 3 calls, got MaxRepeats=%d MaxDelta=%v", imp.MaxRepeats, imp.MaxDelta)
+	}
+}
+
 func TestEvaluateDetectsRevertFlip(t *testing.T) {
 	bytecode, parsed := compileVault(t)
 
