@@ -66,6 +66,10 @@ func TestAnalyzeRealContract(t *testing.T) {
 	if !strings.Contains(out.String(), "deposit() -> balanceOf(address)") {
 		t.Fatalf("expected a deposit() -> balanceOf(address) dependency, got:\n%s", out.String())
 	}
+	// Scenario evaluation must confirm at least one dependency by reordering.
+	if !strings.Contains(out.String(), "[confirmed]") {
+		t.Fatalf("expected at least one [confirmed] dependency, got:\n%s", out.String())
+	}
 }
 
 func writeFile(t *testing.T, path, content string) {

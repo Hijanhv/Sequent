@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"strings"
 
@@ -73,30 +74,79 @@ func analyzeArtifact(path string, out io.Writer) error {
 	}
 
 	g := graph.Build(fns)
-	printReport(out, path, len(fns), skipped, g)
+
+	impacts, err := analyze.Evaluate(c.Bytecode, c.ABI, deployer, caller, g.Edges, analyze.FuzzConfig{})
+	if err != nil {
+		return err
+	}
+
+	printReport(out, path, len(fns), skipped, g, impacts)
 	return nil
 }
 
-func printReport(out io.Writer, path string, analyzed int, skipped []analyze.SkippedFunction, g graph.Graph) {
+func printReport(out io.Writer, path string, analyzed int, skipped []analyze.SkippedFunction, g graph.Graph, impacts []analyze.Impact) {
 	fmt.Fprintf(out, "Sequent: analyzed %s\n", path)
 	fmt.Fprintf(out, "Functions analyzed: %d   Skipped: %d\n\n", analyzed, len(skipped))
 
 	if len(g.Edges) == 0 {
 		fmt.Fprintln(out, "No ordering dependencies found: no function writes storage that another reads.")
-	} else {
-		fmt.Fprintln(out, "Ordering dependencies (Writer -> Reader):")
-		for _, e := range g.Edges {
-			fmt.Fprintf(out, "  %s -> %s   slots: %s\n", e.Writer, e.Reader, formatSlots(e.Slots))
-		}
-		fmt.Fprintf(out, "\n%d %s found. These are the pairs where transaction order can change behavior.\n",
-			len(g.Edges), dependencyWord(len(g.Edges)))
+		printSkipped(out, skipped)
+		return
 	}
 
-	if len(skipped) > 0 {
-		fmt.Fprintln(out, "\nSkipped functions (arguments could not be encoded):")
-		for _, s := range skipped {
-			fmt.Fprintf(out, "  %s: %s\n", s.Name, s.Reason)
+	byEdge := make(map[string]analyze.Impact, len(impacts))
+	for _, imp := range impacts {
+		byEdge[edgeKey(imp.Writer, imp.Reader)] = imp
+	}
+
+	confirmed := 0
+	fmt.Fprintln(out, "Ordering dependencies (Writer -> Reader):")
+	for _, e := range g.Edges {
+		if imp := byEdge[edgeKey(e.Writer, e.Reader)]; imp.Confirmed {
+			confirmed++
+			fmt.Fprintf(out, "  %-11s %s -> %s   reader output %s -> %s\n",
+				"[confirmed]", e.Writer, e.Reader, formatOutput(imp.Before), formatOutput(imp.After))
+		} else {
+			fmt.Fprintf(out, "  %-11s %s -> %s   slots: %s\n",
+				"[shared]", e.Writer, e.Reader, formatSlots(e.Slots))
 		}
+	}
+
+	fmt.Fprintf(out, "\n%d %s found: %d confirmed to change the reader's output, %d sharing state only.\n",
+		len(g.Edges), dependencyWord(len(g.Edges)), confirmed, len(g.Edges)-confirmed)
+	fmt.Fprintln(out, "Confirmed means running the writer first provably changes what the reader returns.")
+
+	printSkipped(out, skipped)
+}
+
+func printSkipped(out io.Writer, skipped []analyze.SkippedFunction) {
+	if len(skipped) == 0 {
+		return
+	}
+	fmt.Fprintln(out, "\nSkipped functions (arguments could not be encoded):")
+	for _, s := range skipped {
+		fmt.Fprintf(out, "  %s: %s\n", s.Name, s.Reason)
+	}
+}
+
+func edgeKey(writer, reader string) string {
+	return writer + "\x00" + reader
+}
+
+// formatOutput renders a reader's return value. A 32-byte word, the common case,
+// is shown as a decimal number; anything else is shown as truncated hex.
+func formatOutput(b []byte) string {
+	switch {
+	case len(b) == 0:
+		return "(no output)"
+	case len(b) == 32:
+		return new(big.Int).SetBytes(b).String()
+	default:
+		s := hex.EncodeToString(b)
+		if len(s) > 32 {
+			s = s[:32] + "..."
+		}
+		return "0x" + s
 	}
 }
 

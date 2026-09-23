@@ -128,17 +128,38 @@ prints the ordering dependencies it found:
 
 ```
 Ordering dependencies (Writer -> Reader):
-  deposit() -> balanceOf(address)   slots: 0xfd5d...5ac7
-  deposit() -> balances(address)    slots: 0xfd5d...5ac7
-  deposit() -> total()              slots: 0x01
-  deposit() -> withdraw()           slots: 0xfd5d...5ac7
+  [confirmed] deposit() -> balanceOf(address)   reader output 0 -> 1
+  [confirmed] deposit() -> total()              reader output 0 -> 1
+  [confirmed] deposit() -> withdraw()           reader output 0x4e487b71... -> (no output)
 
-4 dependencies found. These are the pairs where transaction order can change behavior.
+4 dependencies found: 4 confirmed to change the reader's output, 0 sharing state only.
 ```
 
-Each line means the writer function changes a storage slot the reader function
-depends on, so a party who controls transaction order could place the writer
-first to influence the reader.
+Each line is a pair where the writer changes storage the reader depends on. The
+tag says how sure Sequent is:
+
+- **[confirmed]** means Sequent actually ran the writer just before the reader
+  and watched the reader's answer change. The `reader output` values are the
+  before and after. In the example, calling `deposit` first turns a `balanceOf`
+  answer from 0 into 1, and turns a `withdraw` that used to fail into one that
+  succeeds. This is a proven ordering effect, not a guess.
+- **[shared]** means the two touch the same storage slot, so an effect is
+  possible, but Sequent's inputs did not manage to make the reader's answer
+  change. It is a lead to look at by hand, not a confirmed finding.
+
+### From "they share state" to "order provably changes the outcome"
+
+Sharing a storage slot only says an effect is possible. To tell whether it is
+real, Sequent replays the two functions in both orders. It runs the reader on its
+own and records the answer, then runs the writer immediately before the reader
+and records the answer again. If the two answers differ, the writer really does
+move what the reader sees, and the dependency is marked confirmed with the exact
+before and after values.
+
+This is what separates a genuine finding from noise. A large contract has many
+functions that happen to touch the same slot without one being able to
+meaningfully influence the other; confirmation filters those out and shows, in
+concrete numbers, the ones where transaction order changes the result.
 
 ### How arguments are chosen
 
@@ -176,7 +197,8 @@ Sequent is under active development. Built and tested today:
 - `internal/analyze`: turns a contract's ABI into calls, drives each function
   from a clean baseline, and feeds the traces into the graph. It calls each
   function with several argument value sets, in parallel across independent EVMs,
-  and unions the storage each function touches.
+  and unions the storage each function touches. It also confirms dependencies by
+  replaying each writer-then-reader pair and comparing the reader's output.
 - `internal/contract`: loads a compiled contract. The first loader reads a
   Foundry build artifact.
 - `cmd/sequent`: the command-line tool. `sequent analyze <artifact.json>` prints
@@ -186,7 +208,9 @@ Planned:
 
 - More loaders: separate ABI and bytecode files, and fetching a deployed
   contract's bytecode from a live chain by address.
-- Scenario evaluation that estimates how much value is at risk for each arrow.
+- Putting a number on each confirmed dependency: how much value an attacker
+  could extract, priced in a common asset, on top of the output change Sequent
+  already shows.
 - A report that ranks findings by severity and ships a runnable test for each.
 
 ## Development
