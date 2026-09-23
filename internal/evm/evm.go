@@ -19,6 +19,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
+
+	"github.com/Hijanhv/Sequent/internal/trace"
 )
 
 // gasCap is the gas made available to a deployment or call. It is large enough
@@ -65,11 +67,33 @@ func New() (*Executor, error) {
 func (e *Executor) Deploy(deployer common.Address, initCode []byte) (common.Address, error) {
 	e.fund(deployer)
 
-	_, addr, _, err := e.newEVM(deployer).Create(deployer, initCode, gasCap, uint256.NewInt(0))
+	_, addr, _, err := e.newEVM(deployer, nil).Create(deployer, initCode, gasCap, uint256.NewInt(0))
 	if err != nil {
 		return common.Address{}, fmt.Errorf("deploy contract: %w", err)
 	}
 	return addr, nil
+}
+
+// CallResult holds the outcome of a traced call. Accesses lists the storage
+// reads and writes the called contract made, in execution order. Err is the
+// contract's own execution error such as a revert, not a failure of Sequent;
+// callers decide whether a reverting call is interesting.
+type CallResult struct {
+	Output   []byte
+	Accesses []trace.Access
+	Err      error
+}
+
+// Call invokes to with the given input, recording every storage access the
+// contract at to makes. State changes from the call persist in the Executor, so
+// successive calls see each other's effects, which is exactly what ordering
+// analysis depends on.
+func (e *Executor) Call(from, to common.Address, input []byte) CallResult {
+	e.fund(from)
+
+	tracer := newStorageTracer(to)
+	out, _, err := e.newEVM(from, tracer.hooks()).Call(from, to, input, gasCap, uint256.NewInt(0))
+	return CallResult{Output: out, Accesses: tracer.accesses, Err: err}
 }
 
 // Code returns the runtime code stored at addr, or nil if nothing is there.
@@ -78,8 +102,9 @@ func (e *Executor) Code(addr common.Address) []byte {
 }
 
 // newEVM builds an EVM bound to the current state with origin as the sender.
-func (e *Executor) newEVM(origin common.Address) *vm.EVM {
-	evm := vm.NewEVM(e.blockCtx, e.state, e.chainConfig, vm.Config{NoBaseFee: true})
+// A nil tracer means no tracing.
+func (e *Executor) newEVM(origin common.Address, tracer *tracing.Hooks) *vm.EVM {
+	evm := vm.NewEVM(e.blockCtx, e.state, e.chainConfig, vm.Config{NoBaseFee: true, Tracer: tracer})
 	evm.SetTxContext(vm.TxContext{Origin: origin, GasPrice: new(big.Int)})
 	return evm
 }
