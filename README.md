@@ -39,6 +39,98 @@ functions, Sequent first figures out which pairs can even affect each other, and
 looks only at those. It is faster, and it is easy to explain why a pair was
 flagged.
 
+## How it works
+
+You hand Sequent a compiled contract. It runs the contract inside its own small
+Ethereum, watches what each function does, works out which functions can affect
+each other through shared storage, proves which of those effects are real, and
+hands back a ranked list of findings plus a test that reproduces each one.
+
+```
+  input                                             output
+  -----                                             ------
+  a compiled contract              findings, ranked HIGH -> LOW, each with the
+  (Foundry artifact, or            measured change and a runnable proof test
+   ABI + bytecode files)
+        |                                              ^
+        v                                              |
+  +------------------------------------------------------------+
+  |                          sequent                           |
+  |                                                            |
+  |  1. LOAD     read the ABI (the list of functions) and      |
+  |              the bytecode (the compiled code)              |
+  |                              |                             |
+  |                              v                             |
+  |  2. RUN      deploy into an in-memory EVM and execute      |
+  |              each function, recording every storage        |
+  |              slot it reads and writes                      |
+  |                              |                             |
+  |                              v                             |
+  |  3. CONNECT  draw  A -> B  whenever A writes a slot that   |
+  |              B reads  (this is the interaction graph)      |
+  |                              |                             |
+  |                              v                             |
+  |  4. FUZZ     re-run each function with several inputs, in  |
+  |              parallel, so functions that key storage by    |
+  |              an argument line up on the same key           |
+  |                              |                             |
+  |                              v                             |
+  |  5. CONFIRM  for each A -> B, run B alone, then run A       |
+  |              just before B, and compare B's result         |
+  |                              |                             |
+  |                              v                             |
+  |  6. REPORT   rank by how serious the change is; print as   |
+  |              text or JSON; generate a Foundry proof test   |
+  +------------------------------------------------------------+
+```
+
+### The mechanism, step by step
+
+1. **Load.** A contract describes itself with an ABI (its list of functions) and
+   ships as compiled bytecode. Sequent reads both. It does not need the Solidity
+   source.
+2. **Run.** It deploys the bytecode into an EVM it carries inside itself, calls
+   each function, and records the exact storage slots touched. Because the EVM is
+   in memory and starts empty, the same contract always gives the same result.
+3. **Connect.** If `deposit` writes slot 7 and `balanceOf` reads slot 7, Sequent
+   draws `deposit -> balanceOf`. Pairs that share no slot are dropped, so only
+   the pairs where order could matter move forward.
+4. **Fuzz.** Many functions behave differently depending on their arguments, and
+   a `mapping` stores each key at a different slot. So Sequent calls each function
+   several times with a small set of values, reusing the same caller address as a
+   candidate, so a function that writes `balances[msg.sender]` and one that reads
+   `balances[someAddress]` end up at the same slot and connect.
+5. **Confirm.** A shared slot only means an effect is possible. To prove it,
+   Sequent runs the reader by itself and then runs the writer just before it, and
+   checks whether the reader's answer changed:
+
+   ```
+   starting point:   balances[you] = 0
+
+   honest order:     balanceOf(you)              -> 0
+   attacker first:   deposit(); balanceOf(you)   -> 1
+                                                    ^
+                     the answer moved from 0 to 1, so putting deposit
+                     first provably changes what balanceOf reports
+   ```
+
+6. **Report.** Confirmed effects are ranked by how serious they are (moving a
+   value the reader returns, or flipping it between reverting and succeeding,
+   ranks highest), printed as text or JSON, and turned into a Foundry test that
+   replays the two orderings so anyone can run the proof.
+
+### Where each step lives in the code
+
+| Step | Package |
+| --- | --- |
+| 1. Load | `internal/contract` |
+| 2. Run (embedded EVM + tracer) | `internal/evm`, `internal/trace` |
+| 3. Connect (interaction graph) | `internal/graph` |
+| 4. Fuzz | `internal/analyze` (corpus, fuzz) |
+| 5. Confirm | `internal/analyze` (scenario) |
+| 6. Report + proof test | `internal/report`, `internal/gentest` |
+| Command that ties it together | `cmd/sequent` |
+
 ## Design decisions
 
 ### Why we bring our own EVM instead of using an outside one
