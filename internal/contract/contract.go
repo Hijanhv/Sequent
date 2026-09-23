@@ -67,6 +67,36 @@ func FromFoundryArtifact(path string) (*Contract, error) {
 	return &Contract{ABI: parsedABI, Bytecode: code}, nil
 }
 
+// FromFiles loads a contract from a separate ABI file and creation-bytecode
+// file, the shape most compilers can emit (for example solc --abi and --bin).
+// The ABI file is the JSON array of the contract's entries; the bytecode file is
+// its creation bytecode as hex, with or without a 0x prefix. This is the
+// toolchain-agnostic alternative to a Foundry artifact, built on the same core.
+func FromFiles(abiPath, binPath string) (*Contract, error) {
+	abiData, err := os.ReadFile(abiPath)
+	if err != nil {
+		return nil, fmt.Errorf("read abi: %w", err)
+	}
+	parsedABI, err := abi.JSON(bytes.NewReader(abiData))
+	if err != nil {
+		return nil, fmt.Errorf("parse abi %s: %w", abiPath, err)
+	}
+
+	binData, err := os.ReadFile(binPath)
+	if err != nil {
+		return nil, fmt.Errorf("read bytecode: %w", err)
+	}
+	code, err := decodeHex(strings.TrimSpace(string(binData)))
+	if err != nil {
+		return nil, fmt.Errorf("decode bytecode %s: %w", binPath, err)
+	}
+	if len(code) == 0 {
+		return nil, fmt.Errorf("bytecode file %s is empty", binPath)
+	}
+
+	return &Contract{ABI: parsedABI, Bytecode: code}, nil
+}
+
 func decodeHex(s string) ([]byte, error) {
 	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
 	if s == "" {

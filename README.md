@@ -101,18 +101,17 @@ JSON file per contract that holds both the ABI and the bytecode together. Readin
 that single file is the lowest-friction way to point Sequent at real code, and it
 speaks the same language the target audience already works in.
 
-Two other loaders were considered and deliberately left for later:
+A second loader takes separate ABI and bytecode files (`--abi` and `--bin`), the
+shape most compilers can emit, for teams not on Foundry. It is a thin adapter
+over the same core, which is exactly the point: the expensive work, parsing the
+ABI and driving the contract, is written once and shared by every loader.
 
-- **Separate ABI and bytecode files.** More toolchain-agnostic, but the user has
-  to gather and pass two files. Because it is just another thin loader over the
-  same shape, adding it later costs almost nothing.
-- **Fetching bytecode from a live chain by address.** This is what turns Sequent
-  into a scanner for already-deployed contracts, and it too is just another
-  loader.
+One more loader is planned: fetching bytecode from a live chain by address, which
+turns Sequent into a scanner for already-deployed contracts. It too is just
+another adapter over the same core, so the door is open.
 
-Doing the artifact loader first gets Sequent running on real code the fastest
-without closing any of these doors. The expensive work, parsing the ABI and
-driving the contract, is written once and shared by every loader.
+Doing the artifact loader first got Sequent running on real code the fastest
+without closing any of these off.
 
 ## Using it
 
@@ -143,6 +142,13 @@ again after the writer, and asserts the reader's result changed. It is proof an
 auditor or a developer can run, and it doubles as a regression check once the
 issue is fixed. The file depends only on Foundry's built-in cheatcodes, not on
 forge-std, so it compiles in any Foundry project.
+
+If you are not on Foundry, point Sequent at a separate ABI file and bytecode file
+instead of an artifact:
+
+```sh
+go run ./cmd/sequent analyze --abi Vault.abi --bin Vault.bin
+```
 
 Sequent deploys the contract into its in-memory EVM, calls each function, and
 prints the ordering dependencies it found:
@@ -232,8 +238,8 @@ Sequent is under active development. Built and tested today:
   and unions the storage each function touches. It also confirms dependencies by
   replaying each writer-then-reader pair, and measures the signed change in the
   reader's value so findings can be ranked.
-- `internal/contract`: loads a compiled contract. The first loader reads a
-  Foundry build artifact.
+- `internal/contract`: loads a compiled contract, from a Foundry build artifact
+  or from separate ABI and bytecode files, behind a shared core.
 - `internal/report`: ranks the dependencies into findings by severity and renders
   them as text or, with `--json`, as machine-readable output for CI.
 - `internal/gentest`: generates a runnable Foundry test that reproduces each
@@ -244,8 +250,8 @@ Sequent is under active development. Built and tested today:
 
 Planned:
 
-- More loaders: separate ABI and bytecode files, and fetching a deployed
-  contract's bytecode from a live chain by address.
+- A loader that fetches a deployed contract's bytecode from a live chain by
+  address, so already-deployed contracts can be scanned.
 - Pricing the measured effect in a common asset like ETH, for contracts where a
   market model makes that well defined, on top of the raw magnitude Sequent
   already reports.

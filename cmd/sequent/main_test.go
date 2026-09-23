@@ -21,6 +21,9 @@ func TestRunArgumentHandling(t *testing.T) {
 		{name: "analyze without path", args: []string{"analyze"}, want: 2},
 		{name: "analyze too many args", args: []string{"analyze", "a", "b"}, want: 2},
 		{name: "analyze missing file", args: []string{"analyze", filepath.Join(t.TempDir(), "nope.json")}, want: 1},
+		{name: "abi without bin", args: []string{"analyze", "--abi", "a.abi"}, want: 2},
+		{name: "bin without abi", args: []string{"analyze", "--bin", "b.bin"}, want: 2},
+		{name: "files with artifact", args: []string{"analyze", "--abi", "a", "--bin", "b", "x.json"}, want: 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -117,6 +120,40 @@ func TestGeneratedTestsPassInFoundry(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "0 failed") {
 		t.Fatalf("expected all generated tests to pass, got:\n%s", output)
+	}
+}
+
+// TestAnalyzeFromSeparateFiles checks the --abi/--bin loader by splitting a
+// Foundry artifact into an ABI file and a bytecode file and analyzing those.
+func TestAnalyzeFromSeparateFiles(t *testing.T) {
+	artifact := buildVaultArtifact(t)
+
+	data, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	var parsed struct {
+		ABI      json.RawMessage `json:"abi"`
+		Bytecode struct {
+			Object string `json:"object"`
+		} `json:"bytecode"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse artifact: %v", err)
+	}
+
+	dir := t.TempDir()
+	abiPath := filepath.Join(dir, "Vault.abi")
+	binPath := filepath.Join(dir, "Vault.bin")
+	writeFile(t, abiPath, string(parsed.ABI))
+	writeFile(t, binPath, parsed.Bytecode.Object)
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"analyze", "--abi", abiPath, "--bin", binPath}, &out, &errBuf); code != 0 {
+		t.Fatalf("run exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "deposit() -> balanceOf(address)") {
+		t.Fatalf("expected the mapping dependency from separate files, got:\n%s", out.String())
 	}
 }
 

@@ -33,8 +33,10 @@ const usage = `sequent - an MEV exposure scanner for smart contracts
 
 usage:
   sequent analyze [--json] [--tests <dir>] <foundry-artifact.json>
-      analyze a compiled contract; --json prints machine-readable findings,
-      --tests writes a Foundry reproduction test for the confirmed findings`
+  sequent analyze [--json] [--tests <dir>] --abi <file> --bin <file>
+      analyze a compiled contract, from a Foundry artifact or from separate ABI
+      and bytecode files; --json prints machine-readable findings, --tests writes
+      a Foundry reproduction test for the confirmed findings`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -62,20 +64,21 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "output findings as JSON")
 	testsDir := fs.String("tests", "", "write a Foundry reproduction test to this directory")
+	abiPath := fs.String("abi", "", "path to the ABI JSON (use with --bin instead of a Foundry artifact)")
+	binPath := fs.String("bin", "", "path to the creation bytecode hex (use with --abi)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: sequent analyze [--json] [--tests <dir>] <foundry-artifact.json>")
+		fmt.Fprintln(stderr, "usage: sequent analyze [--json] [--tests <dir>] (<foundry-artifact.json> | --abi <file> --bin <file>)")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
-		fs.Usage()
-		return 2
-	}
-	path := fs.Arg(0)
 
-	c, err := contract.FromFoundryArtifact(path)
+	c, path, err := loadContract(*abiPath, *binPath, fs.Args())
 	if err != nil {
+		if _, ok := err.(usageError); ok {
+			fs.Usage()
+			return 2
+		}
 		fmt.Fprintf(stderr, "sequent: %v\n", err)
 		return 1
 	}
@@ -104,6 +107,32 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// usageError signals a misuse of the command, which maps to exit code 2.
+type usageError struct{ msg string }
+
+func (e usageError) Error() string { return e.msg }
+
+// loadContract picks the input source. Separate --abi/--bin files take precedence
+// when either is given; otherwise a single Foundry artifact argument is required.
+// The returned path is a label for the report and the reproduction-test name.
+func loadContract(abiPath, binPath string, positional []string) (*contract.Contract, string, error) {
+	if abiPath != "" || binPath != "" {
+		if abiPath == "" || binPath == "" {
+			return nil, "", usageError{"both --abi and --bin are required"}
+		}
+		if len(positional) != 0 {
+			return nil, "", usageError{"do not pass an artifact together with --abi/--bin"}
+		}
+		c, err := contract.FromFiles(abiPath, binPath)
+		return c, binPath, err
+	}
+	if len(positional) != 1 {
+		return nil, "", usageError{"exactly one artifact path is required"}
+	}
+	c, err := contract.FromFoundryArtifact(positional[0])
+	return c, positional[0], err
+}
+
 func analyzeContract(c *contract.Contract, path string) (report.Report, error) {
 	fns, skipped, err := analyze.Fuzz(c.Bytecode, c.ABI, deployer, caller, analyze.FuzzConfig{})
 	if err != nil {
@@ -124,7 +153,7 @@ func analyzeContract(c *contract.Contract, path string) (report.Report, error) {
 // writes it next to the given directory. Progress notes go to notes (stderr) so
 // they never mix into a JSON report on stdout.
 func writeReproTests(dir, artifactPath string, bytecode []byte, rep report.Report, notes io.Writer) error {
-	name := strings.TrimSuffix(filepath.Base(artifactPath), ".json")
+	name := contractName(artifactPath)
 	src, n := gentest.Generate(name, bytecode, rep.Findings)
 	if n == 0 {
 		fmt.Fprintln(notes, "No confirmed findings; no reproduction test written.")
@@ -139,4 +168,11 @@ func writeReproTests(dir, artifactPath string, bytecode []byte, rep report.Repor
 	}
 	fmt.Fprintf(notes, "Wrote %d reproduction test(s) to %s\n", n, file)
 	return nil
+}
+
+// contractName derives a contract name from a file path by dropping its
+// extension, so Vault.json, Vault.abi, and Vault.bin all yield "Vault".
+func contractName(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
