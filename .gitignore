@@ -11,3 +11,7 @@ coverage.*
 .DS_Store
 .idea/
 .vscode/
+
+# Foundry build output in examples
+examples/**/out/
+examples/**/cache/

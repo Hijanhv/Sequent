@@ -115,7 +115,14 @@ without closing any of these off.
 
 ## Using it
 
-Build a contract with Foundry, then point Sequent at the artifact:
+There is a ready-to-run example under `examples/vault`:
+
+```sh
+cd examples/vault && forge build
+go run ../../cmd/sequent analyze out/Vault.sol/Vault.json
+```
+
+For your own contract, build it with Foundry and point Sequent at the artifact:
 
 ```sh
 forge build
