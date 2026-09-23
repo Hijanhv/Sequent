@@ -1,0 +1,13 @@
+# Binaries
+/bin/
+/sequent
+*.exe
+
+# Test and coverage output
+*.out
+coverage.*
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
